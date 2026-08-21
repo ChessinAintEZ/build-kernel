@@ -1,61 +1,67 @@
-name: Build Linux Kernel
+name: Build Android 6.1 Kernel & ath9k Modules
 
 on:
-  workflow_dispatch: # Allows manual triggering from the Actions tab
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: 'Target defconfig'
+        required: true
+        default: 'vendor/sm8450-perf_defconfig'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    
-    # Give the runner adequate disk space if possible, though standard runners have ~14GB free
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Repository (Optional if building external source)
+      - name: Maximize Build Disk Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 16384
+          temp-reserve-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libncurses-dev \
-            libssl-dev \
-            libelf-dev \
-            bc \
-            flex \
-            bison \
-            rsync \
-            git \
-            wget \
-            cpio
+          sudo apt-get install -y bc bison flex libssl-dev make libc6-dev libncurses5-dev git wget zip rsync
 
-      - name: Download Linux Kernel Source
+      - name: Download AOSP Clang (r487747c)
         run: |
-          # Using a stable mainline or LTS version (e.g., v6.5 or adjust as needed)
-          KERNEL_VERSION=6.5.9
-          wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz
-          tar -xf linux-${KERNEL_VERSION}.tar.xz
-          cd linux-${KERNEL_VERSION}
-          echo "KERNEL_DIR=$PWD" >> $GITHUB_ENV
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchain/clang-repo
 
-      - name: Configure Kernel
+      - name: Compile Kernel & Modules
+        env:
+          PATH: ${{ github.workspace }}/toolchain/clang-repo/clang-r487747c/bin:$PATH
         run: |
-          cd ${{ env.KERNEL_DIR }}
+          MAKE_ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip"
           
-          # Generate a default defconfig (or you can supply your own .config file)
-          make defconfig
-
-      - name: Build Kernel
-        run: |
-          cd ${{ env.KERNEL_DIR }}
+          # Generate configuration
+          make $MAKE_ARGS ${{ github.event.inputs.defconfig }}
           
-          # Compile using all available CPU threads on the runner
-          make -j$(nproc) bzImage
-          make -j$(nproc) modules
+          # Compile the main kernel image and module dependencies (like cfg80211 and ath.ko)
+          make -j$(nproc) $MAKE_ARGS
+          make -j$(nproc) $MAKE_ARGS modules
 
-      - name: Archive Production Artifacts
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          rm -rf ak3/.git ak3/LICENSE ak3/README.md
+          
+          cp out/arch/arm64/boot/Image ak3/
+          
+          # Move all compiled modules into the flashable zip
+          mkdir -p ak3/modules/system/lib/modules
+          find out -name "*.ko" -exec cp {} ak3/modules/system/lib/modules/ \;
+          
+          cd ak3
+          zip -r9 ../kernel-installer.zip *
+
+      - name: Upload Flashable Zip
         uses: actions/upload-artifact@v4
         with:
-          name: linux-kernel-images
-          path: |
-            ${{ env.KERNEL_DIR }}/arch/x86/boot/bzImage
-            ${{ env.KERNEL_DIR }}.config
+          name: AnyKernel3-ath9k
+          path: kernel-installer.zip
