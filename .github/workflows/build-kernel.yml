@@ -1,1 +1,61 @@
+name: Build Linux Kernel
 
+on:
+  workflow_dispatch: # Allows manual triggering from the Actions tab
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    # Give the runner adequate disk space if possible, though standard runners have ~14GB free
+    steps:
+      - name: Checkout Repository (Optional if building external source)
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            flex \
+            bison \
+            rsync \
+            git \
+            wget \
+            cpio
+
+      - name: Download Linux Kernel Source
+        run: |
+          # Using a stable mainline or LTS version (e.g., v6.5 or adjust as needed)
+          KERNEL_VERSION=6.5.9
+          wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz
+          tar -xf linux-${KERNEL_VERSION}.tar.xz
+          cd linux-${KERNEL_VERSION}
+          echo "KERNEL_DIR=$PWD" >> $GITHUB_ENV
+
+      - name: Configure Kernel
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          
+          # Generate a default defconfig (or you can supply your own .config file)
+          make defconfig
+
+      - name: Build Kernel
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          
+          # Compile using all available CPU threads on the runner
+          make -j$(nproc) bzImage
+          make -j$(nproc) modules
+
+      - name: Archive Production Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-kernel-images
+          path: |
+            ${{ env.KERNEL_DIR }}/arch/x86/boot/bzImage
+            ${{ env.KERNEL_DIR }}.config
